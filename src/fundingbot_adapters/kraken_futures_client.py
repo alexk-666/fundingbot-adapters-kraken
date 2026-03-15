@@ -40,11 +40,12 @@ BASE_PATH = "/derivatives/api/v3"
 
 def calculate_next_funding_timestamp() -> datetime:
     """Вычисляет следующее время funding rate для Kraken Futures.
-    
+
     Kraken Futures имеет расписание каждые 8 часов: 00:00, 08:00, 16:00 UTC.
-    
+
     Returns:
         datetime: Следующее время funding в UTC.
+
     """
     now_utc = datetime.now(UTC)
     now_plus_1_hour = now_utc + timedelta(hours=1)
@@ -156,7 +157,8 @@ class KrakenFuturesClient(CcxtClient):
     async def get_trigger_orders(self, symbol: str) -> Sequence[TriggerOrderProtocol]:
         fiat_quote_symbol = KrakenFuturesSymbolConverter.quote_from_usdt_to_usd(symbol)
         native_symbol = KrakenFuturesSymbolConverter.from_ccxt_to_kraken(fiat_quote_symbol)
-        tpsl_orders = await self._exchange.fetch_open_orders(symbol=native_symbol)
+        all_orders = await self._exchange.fetch_open_orders(symbol=native_symbol)
+        tpsl_orders = [o for o in all_orders if o["type"] == "stop"]
         try:
             return self._trigger_order_list_adapter.validate_python(tpsl_orders)
         except ValidationError as e:
@@ -165,19 +167,18 @@ class KrakenFuturesClient(CcxtClient):
     @map_sdk_errors
     @override
     async def get_funding_rate(self, symbol: str) -> FundingProtocol:
-        """Получает funding rate для конкретного символа, используя KrakenFuturesFundingRateResponse."""
         fiat_quote_symbol = KrakenFuturesSymbolConverter.quote_from_usdt_to_usd(symbol)
-        
+
         # Получаем данные через tickers API
         params_dict = {}
         headers = await self._create_request_headers("tickers", params_dict)
         raw_data = await self._exchange.request("tickers", "public", method="GET", params=params_dict, headers=headers)
-        
+
         # Ищем нужный символ в ответе
         # Нужно искать по полю pair, которое имеет формат "XRP:USD"
         target_pair = fiat_quote_symbol.replace("/", ":").replace(":USD", ":USD")  # XRP/USD:USD -> XRP:USD
         target_pair = target_pair.split(":")[0] + ":" + target_pair.split(":")[1]  # XRP/USD:USD -> XRP:USD
-        
+
         for item in raw_data["tickers"]:
             if item.get("pair") == target_pair and item.get("fundingRate") is not None:
                 try:
@@ -186,7 +187,7 @@ class KrakenFuturesClient(CcxtClient):
                         return model
                 except ValidationError as e:
                     raise FundingRateUnavailableError(symbol=symbol, exchange=self.EXCHANGE_ID) from e
-        
+
         raise FundingRateUnavailableError(symbol=symbol, exchange=self.EXCHANGE_ID)
 
     @rate_limited(10)
